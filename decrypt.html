@@ -1,0 +1,69 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Secure Download (Decrypt in browser)</title>
+<style>
+  body { font-family: system-ui, Arial; padding: 20px; max-width: 780px; }
+  pre { background:#f6f6f6; padding:10px; border-radius:6px; overflow:auto; }
+  button { padding:10px 14px; font-size:16px; }
+</style>
+<h1>Secure Download (client-side decrypt)</h1>
+<p>This page fetches the ciphertext (IV||CT||TAG) from the same URL path and decrypts it using the key in the URL fragment.</p>
+<p id="status">Waiting for input...</p>
+<script>
+async function run() {
+  const status = document.getElementById('status');
+  const hash = location.hash ? location.hash.substring(1) : null;
+  if(!hash) { status.textContent = "Missing key in URL fragment (after '#')."; return; }
+
+  const parts = location.pathname.split('/').filter(Boolean);
+  const folder = location.origin + '/' + parts.slice(0, parts.length-1).join('/') + '/';
+  const candidateNames = ['blob', parts[parts.length-1] || 'blob', parts[parts.length-2] || 'blob', parts[parts.length-2] + '.bin'];
+  let fetchUrl = null;
+  for (const name of candidateNames) {
+    try {
+      const u = folder + name;
+      const r = await fetch(u, {method: 'HEAD'});
+      if (r.ok) { fetchUrl = u; break; }
+    } catch(e) {}
+  }
+  if(!fetchUrl) {
+    status.textContent = "Couldn't determine ciphertext URL automatically. Ensure ciphertext is hosted next to this page (e.g. 'blob' or '<sha>.bin').";
+    return;
+  }
+
+  status.textContent = "Fetching ciphertext from: " + fetchUrl;
+  const resp = await fetch(fetchUrl);
+  if(!resp.ok) { status.textContent = "Failed to fetch ciphertext: " + resp.status; return; }
+  const arr = new Uint8Array(await resp.arrayBuffer());
+  if (arr.length < 29) { status.textContent = "Ciphertext too small."; return; }
+  const iv = arr.slice(0, 12);
+  const ciphertextWithTag = arr.slice(12);
+
+  function base64urlToUint8(s) {
+    s = s.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    const raw = atob(s);
+    const out = new Uint8Array(raw.length);
+    for (let i=0;i<raw.length;i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+
+  try {
+    const rawKey = base64urlToUint8(hash);
+    const cryptoKey = await crypto.subtle.importKey('raw', rawKey, {name:'AES-GCM'}, false, ['decrypt']);
+    status.textContent = "Decrypting...";
+    const plainBuf = await crypto.subtle.decrypt({name:'AES-GCM', iv: iv}, cryptoKey, ciphertextWithTag);
+    const blob = new Blob([plainBuf]);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const filename = parts[parts.length-1] || 'download.bin';
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    status.textContent = "Decrypted and started download.";
+  } catch (e) {
+    status.textContent = "Decryption failed: " + e;
+  }
+}
+run();
+</script>
